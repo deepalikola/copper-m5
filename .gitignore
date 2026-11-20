@@ -44,3 +44,6 @@ next-env.d.ts
 .grading/
 .vitest-cache/
 
+
+# Golden-set evaluation output (npm run eval)
+/eval-results/

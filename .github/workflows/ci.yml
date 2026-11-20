@@ -1,17 +1,27 @@
 name: CI
 
+# Two checks block a merge to main (see "Branch protection" in
+# docs/architecture.md): `check` (lint, types, the app's tests) and `eval` (the
+# golden-set evaluation with real models and the Langfuse scores).
 on:
-  push:
   pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# A new push to the same branch replaces the run in progress, so an old
+# evaluation doesn't keep spending money.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   check:
-    # Students work on macOS and Windows; Vercel builds on Linux.
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -22,4 +32,39 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
-      - run: npm run build
+
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # Repository secrets: Settings > Secrets and variables > Actions. Pull
+      # requests from forks don't get them, so the evaluation fails there on
+      # purpose rather than passing without running.
+      GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
+      LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+      LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+      LANGFUSE_BASE_URL: ${{ secrets.LANGFUSE_BASE_URL }}
+      EVAL_REQUIRE_LANGFUSE: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run eval
+      - name: Show the results
+        if: always()
+        run: |
+          if [ -f eval-results/summary.md ]; then
+            cat eval-results/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "The evaluation did not produce a report. See the log above." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Keep the results
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: eval-results
+          path: eval-results/
+          if-no-files-found: ignore

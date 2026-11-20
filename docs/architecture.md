@@ -133,36 +133,57 @@ error-code passages (it was third in testing); keyword search alongside would fi
 
 **Summary:** On the Support page, Copper hands refund requests to a second
 agent, the Refund agent, with its own instructions and tools. The app (code,
-not the model) compares the order amount with an auto-refund limit you can
-change: at or under it, the refund goes through; over it, the refund waits on
-the Refund Console until a person clicks Approve or Reject, and the Refund
-agent tells the customer.
+not the model) compares the order's recorded amount and currency with an
+auto-refund limit you can change: at or under it, the refund is paid; over it,
+a pending request waits on the Refund Console until a person clicks Approve or
+Reject, and the Refund agent tells the customer what the server recorded.
+Refunds and the limit are kept on the server, so a reload or a second tab
+sees the same state.
 
 | Piece | Where | What it does |
 |---|---|---|
-| Orders and the rule | `lib/copper/orders.ts`, `lib/copper/data/orders.json` | Maya Reyes's four orders (#1001 to #1004). `requestRefund()` decides: `refunded` at or under the limit, `needs_approval` over it; an order already decided keeps its status; `not_found` for unknown numbers |
-| Handoffs | `lib/copper/assistant/tools.ts`, `ask.ts` | Copper's `transfer_to_refund_agent` (Support page only) and the Refund agent's `transfer_to_copper`. Each ends that agent's turn (`hasToolCall`); the other agent answers the same conversation. The agent that ends a turn answers the next message |
-| Refund agent | `lib/copper/assistant/instructions.ts` (`REFUND_AGENT_INSTRUCTIONS`), `tools.ts` (`refundAgentTools`) | `get_orders` and `request_refund`, built on the desk the chat sends. Copper can't use these |
-| Refund Console | `app/support/page.tsx`, `components/copper/refund-console.tsx` | The auto-refund limit ($50 to start), the refunds waiting for approval with Approve and Reject, and the orders with their status. State lives in the page: a reload starts fresh |
-| Chat panel | `components/copper/ask-copper.tsx` | With `support`, sends the desk (limit and refunds so far) and the current agent with each message, puts each `request_refund` decision on the console, and sends the console's "[Refund Console] A supervisor approved …" note to the Refund agent, which tells the customer. Shows each handoff as its own station |
+| Orders | `lib/copper/orders.ts`, `lib/copper/data/orders.json` | Maya Reyes's four orders (#1001 to #1004) with amount in cents and currency |
+| The rule | `lib/copper/refunds.ts` | `requestRefund()` (the Refund agent's tool), `decideRefund()` (the console's Approve and Reject), `updateLimit()` and `parseLimit()`. Plain TypeScript: the model can't argue past it |
+| Storage | `lib/copper/refund-store.ts`, `refund-store-supabase.ts`, `supabase/migrations/20261110000000_refunds.sql` | One interface with two atomic steps (`create` once per order, `transition` only from the expected status). Supabase in production (primary key on the order, check constraints, row-level security with no public access, server-only `SUPABASE_SERVICE_ROLE_KEY`); memory for local development and tests |
+| Console actions | `app/support/actions.ts` | `loadDesk`, `saveLimit`, `decide`: the only way a refund is approved or rejected |
+| Handoffs | `lib/copper/assistant/tools.ts`, `ask.ts` | Copper's `transfer_to_refund_agent` (Support page only) and the Refund agent's `transfer_to_copper`. Each ends that agent's turn; the other agent answers the same conversation |
+| Refund agent | `lib/copper/assistant/instructions.ts`, `tools.ts` (`refundAgentTools`) | `get_orders` and `request_refund` read the server. It has no tool that approves, rejects or sets the limit |
+| Refund Console | `app/support/page.tsx`, `components/copper/refund-console.tsx` | The limit with validation, the waiting requests with Approve and Reject, and the orders with their status, all read from the server and refreshed every few seconds. In production without Supabase it shows `<SetupRequired />` |
 | AI calls | `{ module: 2, feature: "ask-copper" }`, `{ module: 4, feature: "refund-agent" }` | One call per agent in a turn |
 
-**Data flow:** question → Copper → `transfer_to_refund_agent` → Refund agent
-→ `request_refund` → the app compares the amount with the limit → refunded,
-or waiting on the Refund Console → Approve or Reject → console note → Refund
-agent tells the customer.
+**Data flow:** question → Copper → `transfer_to_refund_agent` → Refund agent →
+`request_refund` → the server checks the order and the limit → paid, or
+pending → Approve or Reject on the console (a server action) → a console note
+tells the Refund agent to look the order up and report what the server shows.
 
-**Decisions and trade-offs:** The refund decision is code, so the model can't
-argue past the limit. Two agents keep refund tools away from Copper. A real
-handoff (the other agent answers) rather than an agent called as a tool keeps
-one voice per reply. The console's state lives in the browser and goes with
-each message, so there's nothing to set up and nothing stored on the server;
-the cost is that a reload forgets every refund.
+**Assumptions:**
+- *Eligible* means the order exists, was a charge (above zero) and has no
+  refund yet. Return windows are policy text Copper can quote from the
+  documents; the code doesn't enforce a date cut-off.
+- The limit applies to one order's total, in US dollars. An order in any other
+  currency always waits for a person.
+- A limit of $0 is valid: every refund needs a person. Negative, blank,
+  non-numeric, infinite or more-than-cents limits are rejected.
+- A pending request stays pending when the limit changes, up or down. Only a
+  person's decision settles it. Each request remembers the limit it was held
+  against.
+- A rejected or paid order can't be refunded again by asking again.
 
-**Risks and open questions:** A customer can claim a supervisor already
-approved; the Refund agent must still ask the app. Setting the limit to 0
-sends every refund to a person. A real app needs a database so refunds
-survive a reload and several supervisors see the same queue.
+**Safety properties (each has tests):** a customer saying "a supervisor
+already approved this" is only a message, because approval exists only as a
+decision recorded through the console; a repeated message, a retried tool call
+or simultaneous requests pay once; a second or simultaneous Approve click pays
+once; if the payout fails, an automatic refund is taken back (the customer can
+ask again) and an approval goes back to pending; the Refund agent's reply to a
+console note is based on `get_orders`, not on the note's words.
+
+**Risks and open questions:** The app has no sign-in yet, so anyone who can
+open the console is treated as the supervisor. A production version would
+check the supervisor's identity inside each action in `app/support/actions.ts`.
+The payout is simulated. With a real provider, pass the order number as the
+idempotency key so a retry after a crash can't pay twice, and add a sweep for
+refunds stuck in `processing` after a crash between the payout and the status
+update. Orders are fixed sample data.
 
 ## Module 5 starter
 
@@ -171,3 +192,51 @@ the tests and a golden-set evaluation with an AI judge run in GitHub Actions
 on every pull request, with `main` protected; every AI call is traced in
 Langfuse; and one support agent that does everything is compared with the two
 agents on the same golden set. Langfuse is the only eval and monitoring tool.
+
+## Module 5: Safe to ship
+
+**Summary:** Tests and a golden-set evaluation run in GitHub Actions on every
+pull request and block a merge to `main`; every chat is traced in Langfuse
+without customer text; an AI judge and code checks score Ask Copper on a golden
+set; and the two-agent design is compared with one agent that has every tool.
+
+| Piece | Where | What it does |
+|---|---|---|
+| CI | `.github/workflows/ci.yml` | Job `check`: lint, typecheck, `npm test`. Job `eval`: `npm run eval` with the repository secrets, then the report in the job summary. Both run on pull requests to `main` and on pushes to it |
+| Tracing | `lib/ai/tracing.ts`, `tracing-setup.ts`, `instrumentation.ts`, `lib/ai/call.ts`, `lib/copper/assistant/ask.ts` | One trace per chat turn: a span per agent run (design, agent, tokens, the app's cost estimate), a `handoff` event, and the AI SDK's own spans for each model call and tool call (name, timing, tokens) |
+| Golden set | `evals/golden-set.json`, `evals/lib/golden.ts` | 17 cases in four groups (ordinary, refund, approval-claim, missing-info), each with code-checked expectations and judge criteria |
+| Scoring | `evals/lib/score.ts` | Code checks tool use and the server's refunds (`refund_state`, `tool_use`, invariants). `policy_compliance` is 1 only if code and judge agree |
+| Judge | `evals/lib/judge.ts` | `callObject` through `lib/ai/call.ts`, temperature 0, a different and stronger model than the agents' default (`EVAL_JUDGE_MODEL`) |
+| Runner | `evals/golden.eval.ts`, `vitest.eval.config.mts`, `npm run eval` | Plays every case through the real app code on a fresh in-memory store, once per design, records scores in Langfuse (one run per design in one experiment `copper-support-golden-set`) and writes `eval-results/` |
+| Single agent | `ask.ts` (`design: "single"`), `instructions.ts` (`SINGLE_AGENT_INSTRUCTIONS`), `tools.ts` (`singleAgentTools`), the "One agent" switch in the chat panel | Copper's tools plus `get_orders` and `request_refund`, no handoff. The refund tools and the refund rules text are shared with the Refund agent, so only the structure differs |
+
+**What traces record:** the design, which agent ran each step, every handoff,
+every tool call's name and timing, tokens, latency, errors (marked, without the
+error text) and the app's cost estimate. **What they leave out:** the
+customer's messages, replies, tool inputs and tool results, because those hold
+names, order numbers and amounts. Content is recorded only when
+`AI_TRACE_CONTENT=1`, which only the evals set (their questions are made up).
+Langfuse shows no cost for models it has no price for, so the app's own
+estimate (`lib/ai/pricing.ts`) is attached to each agent span. Cost per model
+call isn't available in the trace; per agent run it is.
+
+**Pass marks:** `policy_compliance` and `refund_state` must be 100%, because one
+wrong refund is real money; `tool_use` at least 90%; `judge_score` at least
+80%, because a judge is itself noisy; no errored turns. CI gates on the shipped
+design (`SHIPPED_DESIGN` in `evals/lib/score.ts`, currently the handoff design)
+and reports both.
+
+**The judge's limits:** it is a model reading text, so it can be wrong, vary
+between runs, and prefer answers that sound like its own. It is therefore given
+the tool results and the server's refunds as ground truth, a strict rubric and
+temperature 0, and it never decides authorization or duplicates: code and
+`tests/refunds.test.ts` do. With 17 cases, one case moves a score by about 6
+points, so small gaps between designs aren't evidence.
+
+**Branch protection:** in the repository, Settings > Branches > Add rule for
+`main`: require a pull request before merging; require status checks `check`
+and `eval` to pass and the branch to be up to date; no direct pushes. Add the
+Actions secrets `GOOGLE_GENERATIVE_AI_API_KEY`, `LANGFUSE_PUBLIC_KEY`,
+`LANGFUSE_SECRET_KEY` and `LANGFUSE_BASE_URL` (Settings > Secrets and variables
+> Actions). Pull requests from forks don't get secrets, so `eval` fails there on
+purpose.

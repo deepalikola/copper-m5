@@ -79,6 +79,8 @@ export function AskCopper({
 }) {
   const [open, setOpen] = useState(docked);
   const [useTools, setUseTools] = useState(true);
+  // Module 5: one agent with every tool instead of Copper plus the Refund agent.
+  const [singleAgent, setSingleAgent] = useState(false);
   const [chats, setChats] = useState<Chats>({ tools: [], noTools: [] });
   const [draft, setDraft] = useState("");
   const body = useRef<HTMLDivElement>(null);
@@ -155,6 +157,7 @@ export function AskCopper({
         // always goes to the Refund agent.
         ...(support && {
           support: true,
+          design: singleAgent ? "single" : "handoff",
           agent: note ? "refund" : turns.at(-1)?.progress.agent,
         }),
       });
@@ -238,6 +241,23 @@ export function AskCopper({
                   aria-label="Use tools"
                   checked={useTools}
                   onCheckedChange={setUseTools}
+                />
+              </div>
+            )}
+            {aiConfigured && support && (
+              <div className="flex items-center gap-3 bg-white/10 px-4 py-2">
+                <div className="flex-1 text-sm">
+                  <span className="font-semibold">One agent</span>
+                  <span className="ml-2 text-xs text-white/70">
+                    {singleAgent
+                      ? "One agent does everything"
+                      : "Copper hands refunds to the Refund agent"}
+                  </span>
+                </div>
+                <Switch
+                  aria-label="One agent"
+                  checked={singleAgent}
+                  onCheckedChange={setSingleAgent}
                 />
               </div>
             )}
