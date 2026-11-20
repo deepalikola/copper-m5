@@ -47,3 +47,4 @@ next-env.d.ts
 
 # Golden-set evaluation output (npm run eval)
 /eval-results/
+/verify-results/

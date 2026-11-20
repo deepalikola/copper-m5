@@ -145,7 +145,8 @@ sees the same state.
 | Orders | `lib/copper/orders.ts`, `lib/copper/data/orders.json` | Maya Reyes's four orders (#1001 to #1004) with amount in cents and currency |
 | The rule | `lib/copper/refunds.ts` | `requestRefund()` (the Refund agent's tool), `decideRefund()` (the console's Approve and Reject), `updateLimit()` and `parseLimit()`. Plain TypeScript: the model can't argue past it |
 | Storage | `lib/copper/refund-store.ts`, `refund-store-supabase.ts`, `supabase/migrations/20261110000000_refunds.sql` | One interface with two atomic steps (`create` once per order, `transition` only from the expected status). Supabase in production (primary key on the order, check constraints, row-level security with no public access, server-only `SUPABASE_SERVICE_ROLE_KEY`); memory for local development and tests |
-| Console actions | `app/support/actions.ts` | `loadDesk`, `saveLimit`, `decide`: the only way a refund is approved or rejected |
+| Supervisor sign-in | `lib/copper/supervisor-auth.ts` | A shared passcode (`SUPERVISOR_PASSCODE`) opens an eight-hour session: an HttpOnly, SameSite cookie holding an expiry and an HMAC signature made with `SUPERVISOR_SESSION_SECRET`. Fails closed if either variable is missing or short; five wrong passcodes lock sign-in for a minute. `requireSupervisor()` is the one place to swap in a real identity system |
+| Console actions | `app/support/actions.ts` | `loadDesk`, `signIn`, `signOut`, `saveLimit`, `decide`. `saveLimit` and `decide` call `requireSupervisor()` first, so a customer using the page, or calling the action directly, is turned away. A customer's view has orders and statuses only, with no limit |
 | Handoffs | `lib/copper/assistant/tools.ts`, `ask.ts` | Copper's `transfer_to_refund_agent` (Support page only) and the Refund agent's `transfer_to_copper`. Each ends that agent's turn; the other agent answers the same conversation |
 | Refund agent | `lib/copper/assistant/instructions.ts`, `tools.ts` (`refundAgentTools`) | `get_orders` and `request_refund` read the server. It has no tool that approves, rejects or sets the limit |
 | Refund Console | `app/support/page.tsx`, `components/copper/refund-console.tsx` | The limit with validation, the waiting requests with Approve and Reject, and the orders with their status, all read from the server and refreshed every few seconds. In production without Supabase it shows `<SetupRequired />` |
@@ -177,10 +178,11 @@ once; if the payout fails, an automatic refund is taken back (the customer can
 ask again) and an approval goes back to pending; the Refund agent's reply to a
 console note is based on `get_orders`, not on the note's words.
 
-**Risks and open questions:** The app has no sign-in yet, so anyone who can
-open the console is treated as the supervisor. A production version would
-check the supervisor's identity inside each action in `app/support/actions.ts`.
-The payout is simulated. With a real provider, pass the order number as the
+**Risks and open questions:** The supervisor session is one shared passcode,
+so it proves "a supervisor" and not which one; the decision is recorded as
+`supervisor`. A real deployment would use individual accounts (for example
+Supabase Auth) behind `requireSupervisor()`. The payout is simulated, and the
+console and the chat say so. With a real provider, pass the order number as the
 idempotency key so a retry after a crash can't pay twice, and add a sweep for
 refunds stuck in `processing` after a crash between the payout and the status
 update. Orders are fixed sample data.

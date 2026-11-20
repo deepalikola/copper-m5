@@ -13,6 +13,7 @@
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run",
     "eval": "node --env-file-if-exists=.env.local node_modules/vitest/vitest.mjs run --config vitest.eval.config.mts",
+    "verify:live": "node --env-file-if-exists=.env.local node_modules/vitest/vitest.mjs run --config vitest.verify.config.mts",
     "format": "prettier --write .",
     "db:migrate": "node --env-file-if-exists=.env.local scripts/db-migrate.mjs",
     "start-module": "node scripts/start-module.mjs",

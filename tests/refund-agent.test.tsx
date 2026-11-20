@@ -17,11 +17,23 @@ import { finalValue } from "@/lib/ai/live";
 import { toolCallsOf } from "@/lib/copper/assistant/progress";
 import { REFUND_AGENT_INSTRUCTIONS } from "@/lib/copper/assistant/instructions";
 import { createMemoryRefundStore } from "@/lib/copper/refund-store";
+import { SESSION_COOKIE, sessionToken } from "@/lib/copper/supervisor-auth";
 import {
   configureRefunds,
   type Payout,
   requestRefund,
 } from "@/lib/copper/refunds";
+
+// The supervisor session lives in a cookie; this stands in for the request's.
+const jar = vi.hoisted(() => ({ values: new Map<string, string>() }));
+vi.mock("next/headers", () => ({
+  cookies: async () => ({
+    get: (name: string) =>
+      jar.values.has(name) ? { name, value: jar.values.get(name) } : undefined,
+    set: (name: string, value: string) => void jar.values.set(name, value),
+    delete: (name: string) => void jar.values.delete(name),
+  }),
+}));
 
 let model: MockLanguageModelV4;
 vi.mock("@ai-sdk/google", () => ({
@@ -93,7 +105,23 @@ async function ask(
 let store = createMemoryRefundStore();
 let payout = vi.fn<Payout>(async () => {});
 
+const PASSCODE = "correct-horse-battery";
+const SECRET = "s".repeat(40);
+
+/** Start the page as a signed-in supervisor. */
+function signedInSupervisor() {
+  jar.values.set(
+    SESSION_COOKIE,
+    sessionToken(SECRET, Math.floor(Date.now() / 1000) + 3600),
+  );
+}
+
 beforeEach(() => {
+  jar.values.clear();
+  vi.stubEnv("SUPERVISOR_PASSCODE", PASSCODE);
+  vi.stubEnv("SUPERVISOR_SESSION_SECRET", SECRET);
+  (globalThis as { __copperSignInFailures?: unknown }).__copperSignInFailures =
+    undefined;
   vi.spyOn(console, "log").mockImplementation(() => {});
   // A fresh store each test: refunds live on the server, not in the chat.
   store = createMemoryRefundStore();
@@ -369,7 +397,8 @@ describe("single agent design (no handoff)", () => {
 });
 
 describe("Refund Console", () => {
-  async function renderConsole() {
+  async function renderConsole({ supervisor = true } = {}) {
+    if (supervisor) signedInSupervisor();
     vi.stubEnv("GOOGLE_GENERATIVE_AI_API_KEY", "test-key");
     const { default: Support } = await import("@/app/support/page");
     render(<Support />);
@@ -436,7 +465,7 @@ describe("Refund Console", () => {
     );
     expect(
       within(screen.getAllByTestId("order")[3]).getByText(
-        "Refunded, approved by you",
+        "Refunded, approved by a supervisor (simulated)",
       ),
     ).toBeVisible();
     expect(await store.get("1004")).toMatchObject({
@@ -451,7 +480,7 @@ describe("Refund Console", () => {
     await renderConsole();
     const waiting = await screen.findByTestId("waiting-refund");
     fireEvent.click(within(waiting).getByRole("button", { name: "Reject" }));
-    expect(await screen.findByText("Rejected by you")).toBeVisible();
+    expect(await screen.findByText("Rejected by a supervisor")).toBeVisible();
     expect(await store.get("1004")).toMatchObject({ status: "rejected" });
     expect(payout).not.toHaveBeenCalled();
   });
@@ -467,6 +496,74 @@ describe("Refund Console", () => {
     ).toBeVisible();
     expect(await store.get("1004")).toMatchObject({ status: "pending" });
     expect(screen.getByTestId("waiting-refund")).toBeVisible();
+  });
+
+  it("says in the page that payouts are simulated", async () => {
+    await renderConsole();
+    expect(screen.getByTestId("simulated-payout")).toHaveTextContent(
+      /Payouts are simulated.*no real money moves/,
+    );
+  });
+
+  it("shows a customer the orders and their status, with no limit and no Approve or Reject", async () => {
+    await requestRefund("1004");
+    await renderConsole({ supervisor: false });
+    expect(screen.getAllByTestId("order")).toHaveLength(4);
+    expect(screen.getByText("Waiting for approval")).toBeVisible();
+    expect(screen.getByTestId("supervisor-signin")).toBeVisible();
+    expect(
+      screen.queryByLabelText("Auto-refund limit"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("waiting-refund")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Approve" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Reject" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("simulated-payout")).toBeVisible();
+  });
+
+  it("a wrong passcode keeps the controls hidden; the right one reveals them", async () => {
+    await requestRefund("1004");
+    await renderConsole({ supervisor: false });
+    const passcode = screen.getByLabelText("Supervisor passcode");
+    const signInButton = screen.getByRole("button", { name: "Sign in" });
+
+    fireEvent.change(passcode, { target: { value: "wrong-passcode" } });
+    fireEvent.click(signInButton);
+    expect(await screen.findByText("That passcode isn't right.")).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Approve" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Supervisor passcode"), {
+      target: { value: PASSCODE },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    const waiting = await screen.findByTestId("waiting-refund");
+    expect(
+      within(waiting).getByRole("button", { name: "Approve" }),
+    ).toBeVisible();
+    expect(screen.getByLabelText("Auto-refund limit")).toHaveValue("50");
+
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await screen.findByTestId("supervisor-signin");
+    expect(
+      screen.queryByRole("button", { name: "Approve" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("says so when supervisor sign-in isn't set up, and nobody can decide", async () => {
+    vi.stubEnv("SUPERVISOR_PASSCODE", "");
+    await requestRefund("1004");
+    await renderConsole({ supervisor: false });
+    expect(
+      screen.getByText(/Supervisor sign-in isn't set up yet/),
+    ).toBeVisible();
+    expect(
+      screen.queryByLabelText("Supervisor passcode"),
+    ).not.toBeInTheDocument();
   });
 
   it("in production, asks for Supabase instead of keeping refunds in memory", async () => {

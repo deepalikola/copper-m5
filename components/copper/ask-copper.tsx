@@ -815,7 +815,9 @@ function ToolOutput({ name, output }: { name: string; output: any }) {
                 refunded ? "bg-accent text-white" : "bg-chart-3 text-white"
               }
             >
-              {refunded ? "Refunded automatically" : "Waiting for a supervisor"}
+              {refunded
+                ? "Refunded automatically (simulated)"
+                : "Waiting for a supervisor"}
             </Pill>
           </>
         )}
