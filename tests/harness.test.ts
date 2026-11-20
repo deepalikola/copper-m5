@@ -19,17 +19,16 @@ describe("Agent harness", () => {
         "Bash(npm test)",
         "Bash(npm run lint)",
         "Bash(npm run typecheck)",
+        "Bash(npm run env:check)",
       ]),
     );
   });
 
-  it("configures the shadcn, docs and read-only Supabase MCP servers", () => {
+  it("configures the shadcn and docs MCP servers", () => {
     expect(Object.keys(mcp.mcpServers).sort()).toEqual([
       "next-devtools",
       "shadcn",
-      "supabase",
     ]);
-    expect(mcp.mcpServers.supabase.url).toContain("read_only=true");
   });
 
   it("CLAUDE.md uses the same rules as AGENTS.md", () => {
@@ -37,13 +36,18 @@ describe("Agent harness", () => {
   });
 
   it.each([
-    "Plan before coding",
+    "Just build it",
+    "Never hand the student an open decision",
+    "Clear blockers yourself",
+    "AskUserQuestion",
     "npm test",
     "components/ui",
     "lib/ai/call.ts",
     ".env",
     "conflicting or outdated facts in the Product Bible",
-    "specs/*/tests",
+    "public/docs/",
+    "lib/copper/assistant/",
+    "npm run env:check",
   ])("AGENTS.md covers %s", (rule) => {
     expect(agents).toContain(rule);
   });

@@ -8,12 +8,7 @@ describe("Delivery files", () => {
   it("README has setup steps and every environment variable, and no Deploy button", () => {
     const readme = read("README.md");
     expect(readme).not.toContain("vercel.com/new/clone");
-    for (const variable of [
-      "AI_GATEWAY_API_KEY",
-      "NEXT_PUBLIC_SUPABASE_URL",
-      "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY",
-      "SUPABASE_DB_URL",
-    ]) {
+    for (const variable of ["GOOGLE_GENERATIVE_AI_API_KEY"]) {
       expect(readme).toContain(variable);
     }
     expect(readme).toContain("~/.codex/config.toml");
@@ -27,6 +22,7 @@ describe("Delivery files", () => {
 
   it("PR template asks for the spec, test evidence, rejected AI code and an architecture note", () => {
     const template = read(".github/pull_request_template.md");
+    expect(template).not.toContain("npm run check");
     for (const heading of [
       "Spec",
       "Test evidence",
@@ -42,8 +38,6 @@ describe("Delivery files", () => {
     "docs/README.md",
     "docs/architecture.md",
     "docs/starter-app.md",
-    "specs/module-0/instructions.md",
-    "specs/README.md",
     "course.config.json",
   ])("%s exists", (path) => {
     expect(existsSync(path)).toBe(true);
@@ -58,11 +52,8 @@ describe("Delivery files", () => {
       "typecheck",
       "test",
       "format",
-      "check",
       "start-module",
-      "grade",
-      "grade:docker",
-      "db:migrate",
+      "env:check",
     ]) {
       expect(scripts[name], name).toBeDefined();
     }
