@@ -1,13 +1,13 @@
 name: CI
 
-# Two checks block a merge to main (see "Branch protection" in
-# docs/architecture.md): `check` (lint, types, the app's tests) and `eval` (the
-# golden-set evaluation with real models and the Langfuse scores).
+# Required checks for main (see "Branch protection" in docs/architecture.md):
+#   check (ubuntu-latest), check (macos-latest), check (windows-latest):
+#     lint, types, the app's tests and a production build on each OS. Students
+#     work on macOS and Windows; Vercel builds on Linux.
+#   eval: the golden-set evaluation with real models and the Langfuse scores.
 on:
-  pull_request:
-    branches: [main]
   push:
-    branches: [main]
+  pull_request:
 
 # A new push to the same branch replaces the run in progress, so an old
 # evaluation doesn't keep spending money.
@@ -20,8 +20,12 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -32,8 +36,12 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+      - run: npm run build
 
   eval:
+    # Real models cost money, so this runs on pull requests and on main, not on
+    # every push to a work-in-progress branch.
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:

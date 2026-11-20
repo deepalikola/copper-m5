@@ -204,7 +204,7 @@ set; and the two-agent design is compared with one agent that has every tool.
 
 | Piece | Where | What it does |
 |---|---|---|
-| CI | `.github/workflows/ci.yml` | Job `check`: lint, typecheck, `npm test`. Job `eval`: `npm run eval` with the repository secrets, then the report in the job summary. Both run on pull requests to `main` and on pushes to it |
+| CI | `.github/workflows/ci.yml` | Job `check` (on Ubuntu, macOS and Windows): lint, typecheck, `npm test`, `npm run build`. Job `eval`: `npm run eval` with the repository secrets, then the report in the job summary. `check` runs on every push and pull request; `eval` (which costs money) on pull requests and on `main` |
 | Tracing | `lib/ai/tracing.ts`, `tracing-setup.ts`, `instrumentation.ts`, `lib/ai/call.ts`, `lib/copper/assistant/ask.ts` | One trace per chat turn: a span per agent run (design, agent, tokens, the app's cost estimate), a `handoff` event, and the AI SDK's own spans for each model call and tool call (name, timing, tokens) |
 | Golden set | `evals/golden-set.json`, `evals/lib/golden.ts` | 17 cases in four groups (ordinary, refund, approval-claim, missing-info), each with code-checked expectations and judge criteria |
 | Scoring | `evals/lib/score.ts` | Code checks tool use and the server's refunds (`refund_state`, `tool_use`, invariants). `policy_compliance` is 1 only if code and judge agree |
@@ -236,8 +236,9 @@ temperature 0, and it never decides authorization or duplicates: code and
 points, so small gaps between designs aren't evidence.
 
 **Branch protection:** in the repository, Settings > Branches > Add rule for
-`main`: require a pull request before merging; require status checks `check`
-and `eval` to pass and the branch to be up to date; no direct pushes. Add the
+`main`: require a pull request before merging; require status checks
+`check (ubuntu-latest)`, `check (macos-latest)`, `check (windows-latest)` and
+`eval` to pass and the branch to be up to date; no direct pushes. Add the
 Actions secrets `GOOGLE_GENERATIVE_AI_API_KEY`, `LANGFUSE_PUBLIC_KEY`,
 `LANGFUSE_SECRET_KEY` and `LANGFUSE_BASE_URL` (Settings > Secrets and variables
 > Actions). Pull requests from forks don't get secrets, so `eval` fails there on
