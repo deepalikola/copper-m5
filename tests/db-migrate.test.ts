@@ -43,7 +43,11 @@ describe("npm run db:migrate", () => {
 
   it("pushes migrations and the seed to SUPABASE_DB_URL", () => {
     const result = run({ SUPABASE_DB_URL: "postgresql://example" });
-    expect(result.status).toBe(0);
+    // The message makes a failure on another OS readable in the CI log.
+    expect(
+      result.status,
+      `stderr: ${result.stderr}\nstdout: ${result.stdout}\nerror: ${result.error}`,
+    ).toBe(0);
     // The fake prints its arguments; Windows' echo may add quotes or spaces.
     expect(result.stdout.trim().replace(/\r/g, "")).toBe(
       "npx supabase db push --db-url postgresql://example --include-seed --yes",
