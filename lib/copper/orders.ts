@@ -1,81 +1,53 @@
-// The customer's orders and the refund rule (Module 4). The rule is code, not
-// the model: the app compares the order amount with the auto-refund limit. At
-// or under it, the refund goes through; over it, it waits for a person on the
-// Refund Console. The model can't argue past it.
-// The Refund Console keeps the limit and every refund so far in the browser
-// and sends them with each chat message (the "desk"), so nothing is stored on
-// the server.
+// The customer's orders (Module 4). Money is kept in whole cents with a
+// currency, so comparisons never depend on floating-point dollars. The refund
+// rule that uses these orders lives in lib/copper/refunds.ts.
 import data from "@/lib/copper/data/orders.json";
 
-export type Order = (typeof data.orders)[number];
-
-/** A refund the app decided ("auto") or a supervisor decided. */
-export type Refund = {
-  orderId: string;
+export type Order = {
+  id: string;
   item: string;
-  amountUsd: number;
-  status: "refunded" | "waiting" | "rejected";
-  by: "auto" | "supervisor";
+  /** What the customer paid, in cents of `currency`. */
+  amountCents: number;
+  currency: string;
+  date: string;
 };
-
-/** What the Refund Console sends with each chat message. */
-export type Desk = { limitUsd: number; refunds: Refund[] };
 
 export const CUSTOMER = data.customer;
 
-/** The starting auto-refund limit on the Refund Console. */
-export const DEFAULT_LIMIT_USD = 50;
+/** The starting auto-refund limit on the Refund Console: $50. */
+export const DEFAULT_LIMIT_CENTS = 5000;
+
+/** The limit is set in this currency; orders in another one always wait for a person. */
+export const LIMIT_CURRENCY = "USD";
+
+const ORDERS: readonly Order[] = data.orders.map((order) => ({
+  id: order.id,
+  item: order.item,
+  amountCents: Math.round(order.amountUsd * 100),
+  currency: order.currency,
+  date: order.date,
+}));
 
 export function getOrders(): Order[] {
-  return structuredClone(data.orders);
+  return ORDERS.map((order) => ({ ...order }));
 }
 
-/** get_orders: the customer's orders, each with its refund so far. */
-export function ordersWithRefunds(desk: Desk) {
-  return {
-    customer: CUSTOMER,
-    orders: getOrders().map((order) => ({
-      id: order.id,
-      item: order.item,
-      amountUsd: order.amountUsd,
-      date: order.date,
-      refund:
-        desk.refunds.find((r) => r.orderId === order.id)?.status ?? "none",
-    })),
-  };
+/** An order number may come with a leading "#" and spaces, like "#1004". */
+export function normalizeOrderId(input: unknown): string {
+  return typeof input === "string" ? input.replace(/^\s*#?\s*/, "").trim() : "";
 }
 
-export type RefundResult =
-  | { status: "not_found"; orderId: string }
-  | {
-      /** Already refunded, waiting or rejected: nothing new happens. */
-      status: Refund["status"];
-      orderId: string;
-      item: string;
-      amountUsd: number;
-    }
-  | {
-      /** refunded: paid now. needs_approval: waits for a supervisor. */
-      status: "refunded" | "needs_approval";
-      orderId: string;
-      item: string;
-      amountUsd: number;
-      limitUsd: number;
-    };
+export function getOrder(input: unknown): Order | undefined {
+  const id = normalizeOrderId(input);
+  return getOrders().find((order) => order.id === id);
+}
 
-/** request_refund: the app's decision. At or under the limit, it's refunded. */
-export function requestRefund(orderId: string, desk: Desk): RefundResult {
-  const id = orderId.replace(/^#/, "").trim();
-  const order = getOrders().find((o) => o.id === id);
-  if (!order) return { status: "not_found", orderId: id };
-  const { item, amountUsd } = order;
-  const earlier = desk.refunds.find((r) => r.orderId === id);
-  if (earlier) return { status: earlier.status, orderId: id, item, amountUsd };
-  return {
-    status: amountUsd <= desk.limitUsd ? "refunded" : "needs_approval",
-    orderId: id,
-    item,
-    amountUsd,
-    limitUsd: desk.limitUsd,
-  };
+/** Cents as a display amount, like 7999 → "$79.99". */
+export function formatMoney(cents: number, currency = LIMIT_CURRENCY): string {
+  const amount = cents / 100;
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency,
+    minimumFractionDigits: Number.isInteger(amount) ? 0 : 2,
+  }).format(amount);
 }

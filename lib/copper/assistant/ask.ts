@@ -4,11 +4,11 @@
 // the model through callStream (lib/ai/call.ts), with or without the tools,
 // and sends back each step as it happens, so the panel can show Copper
 // thinking and using its tools.
-// Module 4: on the Support page the chat also sends the Refund Console's
-// "desk" (the auto-refund limit and the refunds so far) and which agent is
+// Module 4: on the Support page the chat also says so, and which agent is
 // talking. Copper can hand the conversation to the Refund agent, a second
 // agent with its own instructions and tools, and the Refund agent can hand it
-// back. The agent that ends the turn answers the next message too.
+// back. The agent that ends the turn answers the next message too. The
+// refunds and the auto-refund limit live on the server, never in the request.
 import { hasToolCall, stepCountIs } from "ai";
 import { callStream, THOUGHT_SUMMARIES } from "@/lib/ai/call";
 import { createLive, type Live } from "@/lib/ai/live";
@@ -27,15 +27,14 @@ import {
   refundAgentTools,
   transferToRefundAgent,
 } from "@/lib/copper/assistant/tools";
-import type { Desk } from "@/lib/copper/orders";
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
 
 export type AskCopperRequest = {
   messages: ChatMessage[];
   useTools: boolean;
-  /** The Refund Console's limit and refunds (Support page only). */
-  desk?: Desk;
+  /** On the Support page, where Copper can hand refunds to the Refund agent. */
+  support?: boolean;
   /** Who answers first: whoever ended the last turn. Copper by default. */
   agent?: Agent;
 };
@@ -62,15 +61,15 @@ const STOP = [
 const SORRY = "Sorry, something went wrong on my end. Please try again.";
 
 /** One agent's call: its instructions and only its own tools. */
-function agentCall(agent: Agent, messages: ChatMessage[], desk?: Desk) {
-  if (agent === "refund" && desk)
+function agentCall(agent: Agent, messages: ChatMessage[], support?: boolean) {
+  if (agent === "refund" && support)
     return callStream(
       { module: 4, feature: "refund-agent" },
       {
         messages,
         providerOptions: THOUGHT_SUMMARIES,
         instructions: REFUND_AGENT_INSTRUCTIONS,
-        tools: refundAgentTools(desk),
+        tools: refundAgentTools(),
         stopWhen: STOP,
       },
     );
@@ -79,10 +78,10 @@ function agentCall(agent: Agent, messages: ChatMessage[], desk?: Desk) {
     {
       messages,
       providerOptions: THOUGHT_SUMMARIES,
-      instructions: desk
+      instructions: support
         ? `${COPPER_INSTRUCTIONS}\n\n${COPPER_HANDOFF}`
         : COPPER_INSTRUCTIONS,
-      tools: desk
+      tools: support
         ? { ...copperTools, transfer_to_refund_agent: transferToRefundAgent }
         : copperTools,
       stopWhen: STOP,
@@ -93,11 +92,11 @@ function agentCall(agent: Agent, messages: ChatMessage[], desk?: Desk) {
 export async function askCopper({
   messages,
   useTools,
-  desk,
+  support,
   agent = "copper",
 }: AskCopperRequest): Promise<AskCopperResult> {
   const { live, update, done } = createLive<Progress>();
-  const first: Agent = desk && useTools ? agent : "copper";
+  const first: Agent = support && useTools ? agent : "copper";
   const progress: Progress = {
     steps: [],
     reply: "",
@@ -208,7 +207,7 @@ export async function askCopper({
         for (let handoffs = 0; ; handoffs++) {
           const next = await follow(
             current,
-            agentCall(current, messages, desk),
+            agentCall(current, messages, support),
           );
           if (!next || next === current || handoffs >= MAX_HANDOFFS) break;
           progress.steps.push({ type: "handoff", from: current, to: next });

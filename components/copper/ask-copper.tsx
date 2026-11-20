@@ -39,7 +39,6 @@ import {
   TOOL_LABELS,
 } from "@/lib/copper/assistant/progress";
 import { formatUsd, getPlans, getProducts } from "@/lib/copper/catalog";
-import type { Desk, RefundResult } from "@/lib/copper/orders";
 import { cn } from "@/lib/utils";
 
 const STARTERS = [
@@ -50,13 +49,13 @@ const STARTERS = [
 
 /**
  * Module 4: what the Refund Console gives the chat on the Support page. The
- * chat sends the desk with each message, reports each refund decision back,
- * and passes on the console's notes (a supervisor approved or rejected a
- * refund) to the Refund agent.
+ * chat tells the server it is on the Support page (so Copper can hand off),
+ * asks the console to reload whenever the Refund agent asks for a refund, and
+ * passes on the console's notes (a supervisor decided a refund) to the Refund
+ * agent. The refunds and the limit live on the server, not in the chat.
  */
 export type SupportDesk = {
-  desk: Desk;
-  onDecision: (result: RefundResult) => void;
+  onDecision: () => void;
   note: { id: number; text: string } | null;
   starters: string[];
 };
@@ -73,7 +72,7 @@ export function AskCopper({
   support,
 }: {
   aiConfigured: boolean;
-  /** The Refund Console's desk (Support page, Module 4). */
+  /** The Refund Console (Support page, Module 4). */
   support?: SupportDesk;
   /** Stays open beside the page, which remains clickable (the Support page). */
   docked?: boolean;
@@ -152,10 +151,10 @@ export function AskCopper({
       const { progress } = await askCopper({
         messages,
         useTools: chat === "tools",
-        // Module 4: the console's desk, and who is talking. A console note
+        // Module 4: on the Support page, and who is talking. A console note
         // always goes to the Refund agent.
         ...(support && {
-          desk: support.desk,
+          support: true,
           agent: note ? "refund" : turns.at(-1)?.progress.agent,
         }),
       });
@@ -164,14 +163,13 @@ export function AskCopper({
         setProgress(update);
         last = update;
       }
-      // Module 4: each refund the app decided goes onto the Refund Console.
-      for (const step of last?.steps ?? [])
-        if (
-          step.type === "tool" &&
-          step.name === "request_refund" &&
-          step.output
+      // Module 4: a refund the app just decided shows on the Refund Console.
+      if (
+        last?.steps.some(
+          (step) => step.type === "tool" && step.name === "request_refund",
         )
-          support?.onDecision(step.output as RefundResult);
+      )
+        support?.onDecision();
     } catch {
       setProgress({
         steps: [],
@@ -771,6 +769,8 @@ function ToolOutput({ name, output }: { name: string; output: any }) {
   if (name === "request_refund" && output?.status) {
     if (output.status === "not_found")
       return <p className="text-xs">No order #{output.orderId}.</p>;
+    if (output.status === "not_eligible")
+      return <p className="text-xs">{output.reason}</p>;
     const refunded = output.status === "refunded";
     return (
       <div className="space-y-1.5 text-xs">
