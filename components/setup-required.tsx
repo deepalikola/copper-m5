@@ -9,6 +9,10 @@ import {
 
 const SERVICES = {
   ai: { name: "Google AI", variables: ["GOOGLE_GENERATIVE_AI_API_KEY"] },
+  supabase: {
+    name: "Supabase",
+    variables: ["NEXT_PUBLIC_SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"],
+  },
 } as const;
 
 /**

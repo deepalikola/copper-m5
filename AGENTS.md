@@ -20,7 +20,7 @@ You are working with MBA students who are not that technical install any depende
 
 - **Plan before coding.** Show the plan and wait for approval before changing files.
 - **Every change comes with tests.** Run `npm test` before saying a task is done, and report the result honestly.
-- Also keep `npm run lint` and `npm run typecheck` passing. `npm run check` shows which acceptance criteria for the current module pass.
+- Also keep `npm run lint` and `npm run typecheck` passing. `npm run eval` runs the Module 5 golden-set evaluation (it calls real models, so it needs the Google key).
 
 ## Code rules
 

@@ -9,6 +9,7 @@ import {
   type ModelId,
 } from "@/lib/ai/models";
 import { costUsd } from "@/lib/ai/pricing";
+import { traceOptions } from "@/lib/ai/tracing";
 
 // Every model call in the app goes through this file, so each one is logged
 // with its tokens, cost and how long it took. The log goes to the terminal
@@ -27,8 +28,16 @@ export function isAiConfigured(): boolean {
   return Boolean(process.env.GOOGLE_GENERATIVE_AI_API_KEY);
 }
 
-/** Which module and feature made the call, for the ai_calls log. */
-export type CallInfo = { module: number; feature: string; model?: ModelId };
+/**
+ * Which module and feature made the call, for the ai_calls log. `agent` names
+ * who is calling (copper, refund or single) and goes into Langfuse traces.
+ */
+export type CallInfo = {
+  module: number;
+  feature: string;
+  model?: ModelId;
+  agent?: string;
+};
 
 // Omit that keeps generateText's "prompt or messages" union intact.
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
@@ -66,9 +75,21 @@ function languageModel(model: ModelId) {
   return google()(id);
 }
 
+const listeners = new Set<(row: AiCallRow) => void>();
+
+/**
+ * Calls `listener` with the row of every model call, as it is logged. Returns a
+ * function that stops listening. The evals use it to add up tokens and cost.
+ */
+export function onAiCall(listener: (row: AiCallRow) => void): () => void {
+  listeners.add(listener);
+  return () => void listeners.delete(listener);
+}
+
 /** Prints one line per model call, so the cost and time are visible. */
 async function logCall(row: AiCallRow): Promise<void> {
   console.info("[ai_calls]", JSON.stringify(row));
+  for (const listener of listeners) listener(row);
 }
 
 type Usage = { inputTokens?: number; outputTokens?: number };
@@ -114,7 +135,11 @@ async function tracked<T extends { usage: Usage }>(
 /** Generates text. Example: callText({ module: 3, feature: "support-answer" }, { prompt }) */
 export async function callText(info: CallInfo, options: TextOptions) {
   return tracked(info, (model) =>
-    generateText({ ...options, model: languageModel(model) }),
+    generateText({
+      ...options,
+      ...traceOptions(info),
+      model: languageModel(model),
+    }),
   );
 }
 
@@ -127,6 +152,7 @@ export async function callObject<Schema extends z.ZodType>(
   const result = await tracked(info, (model) =>
     generateText({
       ...rest,
+      ...traceOptions(info),
       model: languageModel(model),
       output: Output.object({ schema }),
     }),
@@ -162,6 +188,7 @@ export async function callEmbedMany(
     const result = await embedMany({
       model: google().embedding(EMBEDDING_MODEL.slice("google/".length)),
       values,
+      ...traceOptions({ ...info, agent: "docs" }),
       providerOptions: {
         google: { outputDimensionality: EMBEDDING_DIMENSIONS },
       },
@@ -189,6 +216,7 @@ export function callStream(info: CallInfo, options: StreamOptions) {
   const row = rowFor(info, model, performance.now());
   return streamText({
     ...options,
+    ...traceOptions(info),
     model: languageModel(model),
     onFinish: ({ totalUsage }) => logCall(row(true, totalUsage)),
     onError: () => logCall(row(false)),

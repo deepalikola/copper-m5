@@ -2,26 +2,28 @@
 
 // The Refund Console (Module 4): the auto-refund limit, the refunds waiting
 // for a person, and the customer's orders, with Ask Copper docked beside it.
-// The chat sends the limit and the refunds so far with each message; the app
-// decides each refund against the limit; refunds over it wait here until you
-// approve or reject them, and the Refund agent then tells the customer.
-// Everything lives in this page's state, so a reload starts fresh.
-import { useState } from "react";
+// Everything on this page is read from the server. The Refund agent asks the
+// app for a refund; the app decides against the limit; refunds over it wait
+// here until a signed-in supervisor approves or rejects them, and the Refund
+// agent then tells the customer what the server recorded. Anyone not signed in
+// as a supervisor sees only the orders and their status, and the server turns
+// away their attempts to decide or change the limit.
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  type ConsoleView,
+  decide,
+  loadDesk,
+  saveLimit,
+  signIn,
+  signOut,
+} from "@/app/support/actions";
 import { AskCopper } from "@/components/copper/ask-copper";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { formatUsd } from "@/lib/copper/catalog";
-import {
-  CUSTOMER,
-  DEFAULT_LIMIT_USD,
-  getOrders,
-  type Refund,
-  type RefundResult,
-} from "@/lib/copper/orders";
-
-const ORDERS = getOrders();
+import { formatMoney } from "@/lib/copper/orders";
+import type { Refund } from "@/lib/copper/refund-store";
 
 const STARTERS = [
   "I'd like a refund for my Copper Plus monthly plan.",
@@ -29,64 +31,124 @@ const STARTERS = [
   "What does the refund policy say about annual plans?",
 ];
 
-const STATUS: Record<string, { label: string; className: string }> = {
-  "refunded-auto": {
-    label: "Refunded automatically",
-    className: "bg-accent text-white",
-  },
-  "refunded-supervisor": {
-    label: "Refunded, approved by you",
-    className: "bg-accent text-white",
-  },
-  "waiting-auto": {
-    label: "Waiting for approval",
-    className: "bg-chart-3 text-white",
-  },
-  "rejected-supervisor": {
-    label: "Rejected by you",
-    className: "bg-muted-foreground text-white",
-  },
-};
+const REFRESH_MS = 4000;
 
-export function RefundConsole({ aiConfigured }: { aiConfigured: boolean }) {
-  const [limit, setLimit] = useState(String(DEFAULT_LIMIT_USD));
-  const [refunds, setRefunds] = useState<Refund[]>([]);
+function statusBadge(refund: Refund | null) {
+  if (!refund) return { label: "Paid", className: "", outline: true };
+  if (refund.status === "refunded")
+    return {
+      label:
+        refund.decidedBy === "supervisor"
+          ? "Refunded, approved by a supervisor (simulated)"
+          : "Refunded automatically (simulated)",
+      className: "bg-accent text-white",
+    };
+  if (refund.status === "pending")
+    return {
+      label: "Waiting for approval",
+      className: "bg-chart-3 text-white",
+    };
+  if (refund.status === "rejected")
+    return {
+      label: "Rejected by a supervisor",
+      className: "bg-muted-foreground text-white",
+    };
+  return { label: "Processing refund", className: "bg-chart-3 text-white" };
+}
+
+export function RefundConsole({
+  aiConfigured,
+  storage = "supabase",
+}: {
+  aiConfigured: boolean;
+  /** memory: refunds are lost when the server restarts (local development). */
+  storage?: "supabase" | "memory";
+}) {
+  const [view, setView] = useState<ConsoleView | null>(null);
+  const [passcode, setPasscode] = useState("");
+  const [signInError, setSignInError] = useState<string | null>(null);
+  const [limit, setLimit] = useState("");
+  const [limitError, setLimitError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [busy, setBusy] = useState<Set<string>>(new Set());
   const [note, setNote] = useState<{ id: number; text: string } | null>(null);
-  const limitUsd = Math.max(0, Number(limit) || 0);
-  const waiting = refunds.filter((r) => r.status === "waiting");
+  const editingLimit = useRef(false);
 
-  /** The app's decision on a refund, from the chat. */
-  function onDecision(result: RefundResult) {
-    if (result.status !== "refunded" && result.status !== "needs_approval")
-      return;
-    const { orderId, item, amountUsd } = result;
-    const status = result.status === "refunded" ? "refunded" : "waiting";
-    setRefunds((all) =>
-      all.some((r) => r.orderId === orderId)
-        ? all
-        : [...all, { orderId, item, amountUsd, status, by: "auto" }],
-    );
+  const show = useCallback((next?: ConsoleView) => {
+    if (!next) return;
+    setView(next);
+    if (!editingLimit.current && next.limitCents !== undefined)
+      setLimit(String(next.limitCents / 100));
+  }, []);
+
+  const refresh = useCallback(async () => {
+    const result = await loadDesk();
+    if (result.ok) show(result.view);
+    else setMessage(result.error);
+  }, [show]);
+
+  useEffect(() => {
+    // Load now, then keep checking: the chat can add a request any time.
+    const first = setTimeout(() => void refresh(), 0);
+    const timer = setInterval(() => void refresh(), REFRESH_MS);
+    return () => {
+      clearTimeout(first);
+      clearInterval(timer);
+    };
+  }, [refresh]);
+
+  async function onSaveLimit() {
+    setLimitError(null);
+    const result = await saveLimit(limit);
+    if (result.ok) {
+      editingLimit.current = false;
+      show(result.view);
+    } else {
+      setLimitError(result.error);
+      show(result.view);
+    }
   }
 
-  /** Your decision on a waiting refund. The chat tells the Refund agent. */
-  function decide(refund: Refund, approve: boolean) {
-    if (!refunds.some((r) => r === refund && r.status === "waiting")) return;
-    setRefunds((all) =>
-      all.map((r) =>
-        r === refund
-          ? {
-              ...r,
-              status: approve ? "refunded" : "rejected",
-              by: "supervisor",
-            }
-          : r,
-      ),
-    );
-    setNote((last) => ({
-      id: (last?.id ?? 0) + 1,
-      text: `[Refund Console] A supervisor ${approve ? "approved" : "rejected"} the ${formatUsd(refund.amountUsd)} refund for order #${refund.orderId} (${refund.item}).${approve ? " It has been refunded." : " It will not be refunded."}`,
-    }));
+  async function onSignIn() {
+    setSignInError(null);
+    const result = await signIn(passcode);
+    setPasscode("");
+    show(result.view);
+    if (!result.ok) setSignInError(result.error);
   }
+
+  async function onSignOut() {
+    const result = await signOut();
+    editingLimit.current = false;
+    if (result.ok) show(result.view);
+  }
+
+  /** Your decision on a waiting refund. The chat then tells the Refund agent. */
+  async function onDecide(refund: Refund, decision: "approve" | "reject") {
+    // One click at a time per order; the server also ignores a repeat.
+    if (busy.has(refund.orderId)) return;
+    setBusy((all) => new Set(all).add(refund.orderId));
+    setMessage(null);
+    const result = await decide(refund.orderId, decision);
+    show(result.view);
+    if (result.ok)
+      setNote((last) => ({
+        id: (last?.id ?? 0) + 1,
+        text: `[Refund Console] A decision was recorded for order #${refund.orderId}. Look up the order and tell the customer exactly what its status shows.`,
+      }));
+    else setMessage(result.error);
+    setBusy((all) => {
+      const next = new Set(all);
+      next.delete(refund.orderId);
+      return next;
+    });
+  }
+
+  const supervisor = view?.supervisor ?? false;
+  const waiting = view?.orders.flatMap((o) =>
+    o.refund?.status === "pending" ? [o.refund] : [],
+  );
+  const limitCents = view?.limitCents ?? 0;
 
   return (
     <>
@@ -99,72 +161,194 @@ export function RefundConsole({ aiConfigured }: { aiConfigured: boolean }) {
           <p className="text-muted-foreground mt-2 text-sm">
             Ask for a refund in the chat as the customer. Copper hands you to
             the Refund agent, which asks the app for the refund. The app checks
-            the amount against your limit: at or under it, the refund goes
-            through; over it, it waits here for you.
+            the order&apos;s amount against the supervisor&apos;s limit: at or
+            under it, the refund goes through; over it, it waits here for a
+            supervisor to approve or reject it.
           </p>
-        </div>
-
-        <section className="bg-card space-y-2 rounded-xl border p-4">
-          <Label htmlFor="refund-limit" className="font-semibold">
-            Auto-refund limit
-          </Label>
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">$</span>
-            <Input
-              id="refund-limit"
-              type="number"
-              min={0}
-              step={1}
-              value={limit}
-              onChange={(event) => setLimit(event.target.value)}
-              className="w-32"
-            />
-          </div>
-          <p className="text-muted-foreground text-xs">
-            Refunds up to {formatUsd(limitUsd)} go through on their own.
-            Anything larger needs your approval.
+          <p
+            data-testid="simulated-payout"
+            role="note"
+            className="border-chart-3 bg-card mt-3 rounded-lg border-2 px-3 py-2 text-xs font-medium"
+          >
+            Payouts are simulated: when a refund is marked refunded, no real
+            money moves.
           </p>
-        </section>
-
-        <section className="space-y-3">
-          <h2 className="font-semibold">Waiting for your approval</h2>
-          {waiting.length === 0 && (
-            <p className="text-muted-foreground rounded-xl border border-dashed p-4 text-sm">
-              Nothing is waiting. Refunds over the limit will stop here.
+          {storage === "memory" && (
+            <p
+              role="status"
+              className="bg-secondary text-secondary-foreground mt-3 rounded-lg px-3 py-2 text-xs"
+            >
+              Local mode: refunds are kept in memory and reset when the server
+              restarts. Add the Supabase keys to keep them.
             </p>
           )}
-          {waiting.map((refund) => (
-            <div
-              key={refund.orderId}
-              data-testid="waiting-refund"
-              className="border-chart-3 bg-card flex flex-wrap items-center gap-3 rounded-xl border-2 p-4"
+        </div>
+
+        {view && !supervisor && (
+          <section
+            data-testid="supervisor-signin"
+            className="bg-card space-y-2 rounded-xl border p-4"
+          >
+            <h2 className="font-semibold">Supervisor sign-in</h2>
+            <p className="text-muted-foreground text-xs">
+              Only a signed-in supervisor can approve or reject a refund or
+              change the auto-refund limit. Customers see their orders and each
+              refund&apos;s status.
+            </p>
+            {view.signInAvailable ? (
+              <form
+                className="flex flex-wrap items-center gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void onSignIn();
+                }}
+              >
+                <Label htmlFor="supervisor-passcode" className="sr-only">
+                  Supervisor passcode
+                </Label>
+                <Input
+                  id="supervisor-passcode"
+                  type="password"
+                  autoComplete="off"
+                  value={passcode}
+                  onChange={(event) => setPasscode(event.target.value)}
+                  className="w-48"
+                />
+                <Button type="submit" variant="outline">
+                  Sign in
+                </Button>
+              </form>
+            ) : (
+              <p className="text-xs">
+                Supervisor sign-in isn&apos;t set up yet. Set{" "}
+                <code>SUPERVISOR_PASSCODE</code> and{" "}
+                <code>SUPERVISOR_SESSION_SECRET</code> on the server.
+              </p>
+            )}
+            {signInError && (
+              <p role="alert" className="text-destructive text-xs">
+                {signInError}
+              </p>
+            )}
+          </section>
+        )}
+
+        {supervisor && (
+          <div className="flex items-center justify-between gap-3 text-sm">
+            <span className="text-muted-foreground">
+              Signed in as a supervisor.
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void onSignOut()}
             >
-              <div className="min-w-0 flex-1">
-                <p className="font-medium">
-                  #{refund.orderId} {refund.item}
-                </p>
-                <p className="text-muted-foreground text-xs">
-                  {formatUsd(refund.amountUsd)} is over the{" "}
-                  {formatUsd(limitUsd)} limit. The Refund agent is paused.
-                </p>
-              </div>
-              <span className="font-mono text-lg font-bold">
-                {formatUsd(refund.amountUsd)}
-              </span>
-              <Button onClick={() => decide(refund, true)}>Approve</Button>
-              <Button variant="outline" onClick={() => decide(refund, false)}>
-                Reject
+              Sign out
+            </Button>
+          </div>
+        )}
+
+        {supervisor && (
+          <section className="bg-card space-y-2 rounded-xl border p-4">
+            <Label htmlFor="refund-limit" className="font-semibold">
+              Auto-refund limit
+            </Label>
+            <form
+              className="flex items-center gap-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void onSaveLimit();
+              }}
+            >
+              <span className="text-muted-foreground">$</span>
+              <Input
+                id="refund-limit"
+                type="text"
+                inputMode="decimal"
+                value={limit}
+                aria-invalid={limitError ? true : undefined}
+                aria-describedby="refund-limit-help"
+                onChange={(event) => {
+                  editingLimit.current = true;
+                  setLimit(event.target.value);
+                }}
+                className="w-32"
+              />
+              <Button type="submit" variant="outline">
+                Save limit
               </Button>
-            </div>
-          ))}
-        </section>
+            </form>
+            {limitError && (
+              <p role="alert" className="text-destructive text-xs">
+                {limitError}
+              </p>
+            )}
+            <p id="refund-limit-help" className="text-muted-foreground text-xs">
+              {limitCents === 0
+                ? "With a limit of $0, every refund needs your approval."
+                : `Refunds up to ${formatMoney(limitCents)} go through on their own. Anything larger needs your approval.`}{" "}
+              Changing the limit never changes a request that is already
+              waiting: only you decide those.
+            </p>
+          </section>
+        )}
+
+        {message && (
+          <p role="alert" className="text-destructive text-sm">
+            {message}
+          </p>
+        )}
+
+        {supervisor && (
+          <section className="space-y-3">
+            <h2 className="font-semibold">Waiting for your approval</h2>
+            {waiting?.length === 0 && (
+              <p className="text-muted-foreground rounded-xl border border-dashed p-4 text-sm">
+                Nothing is waiting. Refunds over the limit will stop here.
+              </p>
+            )}
+            {waiting?.map((refund) => (
+              <div
+                key={refund.orderId}
+                data-testid="waiting-refund"
+                className="border-chart-3 bg-card flex flex-wrap items-center gap-3 rounded-xl border-2 p-4"
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium">
+                    #{refund.orderId} {refund.item}
+                  </p>
+                  <p className="text-muted-foreground text-xs">
+                    {formatMoney(refund.amountCents, refund.currency)} was over
+                    the {formatMoney(refund.limitCents)} limit when it was asked
+                    for. The Refund agent is paused.
+                  </p>
+                </div>
+                <span className="font-mono text-lg font-bold">
+                  {formatMoney(refund.amountCents, refund.currency)}
+                </span>
+                <Button
+                  disabled={busy.has(refund.orderId)}
+                  onClick={() => void onDecide(refund, "approve")}
+                >
+                  Approve
+                </Button>
+                <Button
+                  variant="outline"
+                  disabled={busy.has(refund.orderId)}
+                  onClick={() => void onDecide(refund, "reject")}
+                >
+                  Reject
+                </Button>
+              </div>
+            ))}
+          </section>
+        )}
 
         <section className="space-y-3">
-          <h2 className="font-semibold">{CUSTOMER}&apos;s orders</h2>
+          <h2 className="font-semibold">{view?.customer}&apos;s orders</h2>
           <ul className="bg-card divide-y rounded-xl border text-sm">
-            {ORDERS.map((order) => {
-              const refund = refunds.find((r) => r.orderId === order.id);
-              const status = refund && STATUS[`${refund.status}-${refund.by}`];
+            {view?.orders.map((order) => {
+              const status = statusBadge(order.refund);
               return (
                 <li
                   key={order.id}
@@ -177,13 +361,14 @@ export function RefundConsole({ aiConfigured }: { aiConfigured: boolean }) {
                   <span className="min-w-0 flex-1 font-medium">
                     {order.item}
                   </span>
-                  {status ? (
-                    <Badge className={status.className}>{status.label}</Badge>
-                  ) : (
-                    <Badge variant="outline">Paid</Badge>
-                  )}
+                  <Badge
+                    variant={status.outline ? "outline" : undefined}
+                    className={status.className}
+                  >
+                    {status.label}
+                  </Badge>
                   <span className="w-16 text-right font-mono">
-                    {formatUsd(order.amountUsd)}
+                    {formatMoney(order.amountCents, order.currency)}
                   </span>
                 </li>
               );
@@ -194,12 +379,7 @@ export function RefundConsole({ aiConfigured }: { aiConfigured: boolean }) {
       <AskCopper
         aiConfigured={aiConfigured}
         docked
-        support={{
-          desk: { limitUsd, refunds },
-          onDecision,
-          note,
-          starters: STARTERS,
-        }}
+        support={{ onDecision: refresh, note, starters: STARTERS }}
       />
     </>
   );

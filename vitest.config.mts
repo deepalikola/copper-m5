@@ -8,6 +8,8 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./vitest.setup.ts"],
     include: ["**/*.test.{ts,tsx}"],
-    exclude: ["node_modules/**", ".next/**"],
+    // specs/ holds the archived Module 0 acceptance tests; the course
+    // grader ran them with `npm run check`, which this branch no longer has.
+    exclude: ["node_modules/**", ".next/**", "specs/**"],
   },
 });

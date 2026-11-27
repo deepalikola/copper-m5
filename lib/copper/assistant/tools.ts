@@ -5,7 +5,7 @@
 // Module 4: on the Support page, Copper can hand refunds to the Refund agent
 // (transfer_to_refund_agent), a second agent with its own tools
 // (refundAgentTools, below) built on the orders and the refund rule in
-// lib/copper/orders.ts.
+// lib/copper/refunds.ts.
 // Each tool returns plain data; the model writes the reply around it.
 import { tool } from "ai";
 import { z } from "zod";
@@ -19,11 +19,7 @@ import {
 import { DOCUMENTS, pageUrl } from "@/lib/copper/documents";
 import { readInventory } from "@/lib/copper/inventory";
 import { PASSAGES } from "@/lib/copper/passages";
-import {
-  type Desk,
-  ordersWithRefunds,
-  requestRefund,
-} from "@/lib/copper/orders";
+import { ordersWithRefunds, requestRefund } from "@/lib/copper/refunds";
 
 export type ProductList = {
   products: {
@@ -293,23 +289,30 @@ export const transferToRefundAgent = tool({
   execute: async () => ({ handedTo: "Refund agent" }),
 });
 
-/** The Refund agent's own tools (Module 4). Copper can't use these. */
-export function refundAgentTools(desk: Desk) {
+/** The refund tools both designs use: look up orders, ask the app for a refund. */
+function refundCoreTools() {
   return {
     get_orders: tool({
       description:
         "Lists the customer's orders: number, item, amount, date, and any refund so far (none, refunded, waiting or rejected).",
       inputSchema: z.object({}),
-      execute: async () => ordersWithRefunds(desk),
+      execute: async () => ordersWithRefunds(),
     }),
     request_refund: tool({
       description:
-        "Asks the app to refund one order. The app compares the amount with the auto-refund limit: refunded means the money is on its way; needs_approval means it waits for a supervisor on the Refund Console. It may also say the order was already refunded, is waiting, was rejected, or doesn't exist.",
+        "Asks the app to refund one order. The app compares the order's amount with the auto-refund limit: refunded means the money is on its way; needs_approval means it waits for a supervisor on the Refund Console. It may also say an earlier request stands (waiting, refunded, rejected or processing), that nothing was refunded because the payment failed, that the order isn't eligible, or that it doesn't exist.",
       inputSchema: z.object({
         orderId: z.string().describe("The order number, like 1001."),
       }),
-      execute: async ({ orderId }) => requestRefund(orderId, desk),
+      execute: async ({ orderId }) => requestRefund(orderId),
     }),
+  };
+}
+
+/** The Refund agent's own tools (Module 4). Copper can't use these. */
+export function refundAgentTools() {
+  return {
+    ...refundCoreTools(),
     transfer_to_copper: tool({
       description:
         "Hands the customer back to Copper for anything that isn't a refund (products, prices, stock, setup, policies). Copper answers next, so write no reply of your own.",
@@ -319,4 +322,12 @@ export function refundAgentTools(desk: Desk) {
       execute: async () => ({ handedTo: "Copper" }),
     }),
   };
+}
+
+/**
+ * The single agent's tools (Module 5): everything Copper can do plus the refund
+ * tools, with no handoff. The refund tools call the same server rule.
+ */
+export function singleAgentTools() {
+  return { ...copperTools, ...refundCoreTools() };
 }
