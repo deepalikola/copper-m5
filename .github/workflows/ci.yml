@@ -53,10 +53,12 @@ jobs:
       LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
       LANGFUSE_BASE_URL: ${{ secrets.LANGFUSE_BASE_URL }}
       EVAL_REQUIRE_LANGFUSE: "1"
-      # The judge: a full Flash model, stronger than the agents' Flash-Lite. The
-      # preview model (gemini-3-flash) has too small a free-tier quota to grade
-      # the whole golden set in one run.
-      EVAL_JUDGE_MODEL: google/gemini-2.5-flash
+      # The judge. The default (gemini-3-flash, a preview model) runs out of
+      # free-tier quota partway through the golden set, and gemini-2.5-flash is
+      # closed to new keys, so the judge uses the agents' own Flash-Lite. A
+      # model can grade its own kind of answer too kindly, so judge_score is a
+      # signal; refund_state, tool_use and policy are checked by code.
+      EVAL_JUDGE_MODEL: google/gemini-3.5-flash-lite
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
