@@ -27,6 +27,7 @@ import type { Design } from "@/lib/copper/assistant/ask";
 import { runCase } from "./lib/conversation";
 import { loadGoldenSet } from "./lib/golden";
 import { judgeCase, judgeModel } from "./lib/judge";
+import { retryPatiently } from "./lib/retry";
 import {
   type CaseResult,
   type CaseRun,
@@ -93,8 +94,18 @@ describe("golden set", () => {
         return found;
       };
 
-      const task = async (item: { metadata?: unknown }) =>
-        runCase(set, caseOf(item), design);
+      // A rate-limited turn errors; run the whole case again from a fresh
+      // store after a wait, so the result reflects the agent, not the quota.
+      const task = async (item: { metadata?: unknown }) => {
+        const c = caseOf(item);
+        return retryPatiently(() => runCase(set, c, design), {
+          failed: (run) => run.errored,
+          onRetry: (attempt, ms) =>
+            console.warn(
+              `[eval] ${design}/${c.id}: a chat turn errored, retry ${attempt} in ${ms / 1000} s`,
+            ),
+        });
+      };
 
       const evaluator = async (item: {
         output: CaseRun;
@@ -103,14 +114,21 @@ describe("golden set", () => {
         const c = caseOf(item);
         // If the judge can't be reached the criteria fail, so the gate fails
         // closed instead of passing on missing evidence.
-        const verdicts: Verdict[] = await judgeCase(c, item.output).catch(
-          (error: unknown) =>
-            c.criteria.map((x) => ({
-              dimension: x.dimension,
-              criterion: x.text,
-              pass: false,
-              reason: `The judge failed: ${String(error).slice(0, 120)}`,
-            })),
+        const verdicts: Verdict[] = await retryPatiently(
+          () => judgeCase(c, item.output),
+          {
+            onRetry: (attempt, ms) =>
+              console.warn(
+                `[eval] ${design}/${c.id}: the judge failed, retry ${attempt} in ${ms / 1000} s`,
+              ),
+          },
+        ).catch((error: unknown) =>
+          c.criteria.map((x) => ({
+            dimension: x.dimension,
+            criterion: x.text,
+            pass: false,
+            reason: `The judge failed: ${String(error).slice(0, 120)}`,
+          })),
         );
         const scores = scoreCase(c, item.output, verdicts);
         results.set(c.id, { case: c, run: item.output, verdicts, scores });
